@@ -1348,8 +1348,21 @@ class Caravel(BaseCaravelView):
         sql = request.form.get('sql')
         database_id = request.form.get('database_id')
         schema = request.form.get('schema')
+        tab_name = request.form.get('tab_name')
+        tmp_table_name = request.form.get('tmp_table_name')
+        select_as_cta = request.form.get('select_as_cta') == 'True'
+
         session = db.session()
         mydb = session.query(models.Database).filter_by(id=database_id).first()
+
+        if not mydb:
+            return Response(
+                    json.dumps({
+                        'error': 'Database with id 0 is missing.',
+                        'status': models.QueryStatus.FAILED,
+                    }),
+                    status=500,
+                    mimetype="application/json")
 
         if not (self.can_access(
                 'all_datasource_access', 'all_datasource_access') or
@@ -1358,19 +1371,73 @@ class Caravel(BaseCaravelView):
                 "SQL Lab requires the `all_datasource_access` or "
                 "specific DB permission"))
 
-        data = tasks.get_sql_results(database_id, sql, g.user.get_id(),
-                                     schema=schema)
-        if 'error' in data:
+        # DB select_as_create_table_as forces all queries to be
+        # select_as_cta.
+        if select_as_cta or mydb.select_as_create_table_as:
+            select_as_cta = True
+        start_time = datetime.now()
+        query_name = '{}_{}_{}'.format(
+            g.user.get_id(), tab_name, start_time.strftime('%M:%S:%f'))
+
+        query = models.Query(
+            database_id=database_id,
+            limit=app.config.get('SQL_MAX_ROW', None),
+            name=query_name,
+            sql=sql,
+            schema=schema,
+            # TODO(bkyryliuk): consider it being DB property.
+            select_as_cta=select_as_cta,
+            start_time=start_time,
+            status=models.QueryStatus.SCHEDULED,
+            tab_name=tab_name,
+            tmp_table_name=tmp_table_name,
+            user_id=g.user.get_id(),
+        )
+        session.add(query)
+        session.commit()
+
+        data = tasks.get_sql_results(query.id)
+        if data['status'] == models.QueryStatus.FAILED:
                 return Response(
                     json.dumps(data),
                     status=500,
                     mimetype="application/json")
-        if 'tmp_table' in data:
-            # TODO(bkyryliuk): add query id to the response and implement the
-            #                  endpoint to poll the status and results.
-            return None
-        return json.dumps(
-            data, default=utils.json_int_dttm_ser, allow_nan=False)
+        elif 'query_id' in data:
+            return Response(
+                json.dumps(data),
+                status=200,
+                mimetype="application/json")
+        return Response(
+            json.dumps(
+                data, default=utils.json_int_dttm_ser, allow_nan=False),
+            status=200,
+            mimetype="application/json")
+
+    @has_access
+    @expose("/query_progress/", methods=['GET'])
+    @log_this
+    def query_progress(self):
+        """Runs arbitrary sql and returns and json"""
+        query_id = request.form.get('query_id')
+        s = db.session()
+        query = s.query(models.Query).filter_by(id=query_id).first()
+        mydb = s.query(models.Database).filter_by(id=query.database_id).first()
+
+        if not (self.can_access(
+                'all_datasource_access', 'all_datasource_access') or
+                    self.can_access('database_access', mydb.perm)):
+            raise utils.CaravelSecurityException(_(
+                "SQL Lab requires the `all_datasource_access` or "
+                "specific DB permission"))
+
+        return Response(
+            json.dumps({
+                'status': query.status,
+                'progress': query.progress
+            }),
+            status=200,
+            mimetype="application/json")
+
 
     @has_access
     @expose("/refresh_datasources/")
