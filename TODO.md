@@ -10,7 +10,6 @@ List of TODO items for Caravel
     Caravel would discover and expose the plugins
 
 ## Features
-* **Dashboard URL filters:** `{dash_url}#fltin__fieldname__value1,value2`
 * **Default slice:** choose a default slice for the dataset instead of
     default endpoint
 * **Widget sets / chart grids:** a way to have all charts support making
